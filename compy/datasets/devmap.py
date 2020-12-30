@@ -9,7 +9,7 @@ class OpenCLDevmapDataset(dataset.Dataset):
     def __init__(self):
         super().__init__()
 
-        uri = "http://wwwpub.zih.tu-dresden.de/~s9602232/devmap.zip"
+        uri = "https://static.five.name/datasets/devmap.zip"
         self.download_http_and_extract(uri)
 
         self.additional_include_dirs = [
