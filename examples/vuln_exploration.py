@@ -39,14 +39,24 @@ for builder, visitor, model in combinations:
 
     data = dataset.preprocess(builder(clang_driver), visitor)
 
+    # downsample negative samples for 50/50 split
+    samples_negative = [sample for sample in data["samples"] if not sample["y"]]
+    samples_positive = [sample for sample in data["samples"] if sample["y"]]
+    assert len(samples_negative) > len(samples_positive)
+
+    rng = np.random.default_rng(seed=0)
+    samples_negative_downsampled = rng.choice(samples_negative, size=len(samples_positive), replace=False)
+    balanced_samples = np.append(samples_negative_downsampled, samples_positive)
+    print("total samples: {}", len(balanced_samples))
+
     # Train and test
     kf = StratifiedKFold(n_splits=10, shuffle=True, random_state=204)
-    split = kf.split(data["samples"], [sample["y"] for sample in data["samples"]])
+    split = kf.split(balanced_samples, [sample["y"] for sample in balanced_samples])
     for train_idx, test_idx in split:
         model = model(num_types=data["num_types"])
         train_summary = model.train(
-            list(np.array(data["samples"])[train_idx]),
-            list(np.array(data["samples"])[test_idx]),
+            list(np.array(balanced_samples)[train_idx]),
+            list(np.array(balanced_samples)[test_idx]),
         )
         print(train_summary)
 
