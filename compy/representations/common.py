@@ -1,10 +1,12 @@
 import collections
+import abc
+from typing import Any, List, Optional, Union
 
 import networkx as nx
 import pygraphviz as pgv
 
 
-class RepresentationBuilder(object):
+class RepresentationBuilder(abc.ABC):
     def __init__(self):
         self._tokens = collections.OrderedDict()
 
@@ -23,6 +25,14 @@ class RepresentationBuilder(object):
             idx = list(self._tokens.keys()).index(k)
             print("{:<8} {:<25} {:<10}".format(str(idx), str(k), str(v)))
         print("-" * 50)
+
+    @abc.abstractmethod
+    def string_to_info(self, src: Union[str,bytes], additional_include_dir: Optional[str] = None, filename: Optional[str] = None) -> Any:
+        pass
+
+    @abc.abstractmethod
+    def info_to_representation(self, info, visitor):
+        pass
 
 
 class Sequence(object):
