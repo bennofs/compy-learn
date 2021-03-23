@@ -1,9 +1,8 @@
 import collections
 import abc
-from typing import Any, List, Optional, Union
+from typing import Any, Optional, Union
 
 import networkx as nx
-import pygraphviz as pgv
 
 
 class RepresentationBuilder(abc.ABC):
@@ -49,6 +48,7 @@ class Sequence(object):
         return len(self.S)
 
     def draw(self, width=8, limit=30, path=None):
+        import pygraphviz as pgv
         # Create dot graph.
         graphviz_graph = pgv.AGraph(
             directed=True,
