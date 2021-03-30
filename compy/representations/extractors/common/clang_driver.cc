@@ -55,7 +55,8 @@ ClangDriver::ClangDriver(
     std::vector<std::string> compilerFlags)
     : optimizationLevel_(optimizationLevel),
       includeDirs_(includeDirs),
-      compilerFlags_(compilerFlags) {
+      compilerFlags_(compilerFlags),
+      compilerBinary_("clang") {
   switch (programmingLanguage) {
     case ProgrammingLanguage::C:
       fileName_ = "program.c";
@@ -90,6 +91,12 @@ void ClangDriver::setFileName(std::string fileName) {
 
 std::string ClangDriver::getFileName() const { return fileName_; }
 
+void ClangDriver::setCompilerBinary(std::string path) {
+  compilerBinary_ = std::move(path);
+}
+
+std::string ClangDriver::getCompilerBinary() const { return compilerBinary_; }
+
 void ClangDriver::Invoke(std::string src, std::vector<::clang::FrontendAction *> frontendActions,
                          std::vector<::llvm::Pass *> passes) {
   const char *filename = fileName_.c_str();
@@ -97,6 +104,7 @@ void ClangDriver::Invoke(std::string src, std::vector<::clang::FrontendAction *>
   auto code = src.c_str();
 
   std::vector<const char *> args;
+  args.push_back(compilerBinary_.c_str());
   args.push_back(filename);
 
   // Optimization level.
@@ -140,11 +148,20 @@ void ClangDriver::Invoke(std::string src, std::vector<::clang::FrontendAction *>
     // well formed diagnostic object.
     IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions();
     TextDiagnosticBuffer *DiagsBuffer = new TextDiagnosticBuffer;
-    DiagnosticsEngine Diags(DiagID, &*DiagOpts, DiagsBuffer);
+    IntrusiveRefCntPtr<DiagnosticsEngine> Diags =
+        new DiagnosticsEngine(DiagID, &*DiagOpts, DiagsBuffer);
 
     // Initialize CompilerInvocation.
-    CompilerInvocation::CreateFromArgs(Clang->getInvocation(),
-                                       ArrayRef<const char *>(args), Diags);
+    const std::shared_ptr<CompilerInvocation> invocation =
+        createInvocationFromCommandLine(ArrayRef<const char *>(args), Diags,
+                                        nullptr, true);
+    if (!invocation) {
+      for (auto I = DiagsBuffer->err_begin(), E = DiagsBuffer->err_end();
+           I != E; ++I)
+        std::cout << "# " << I->second << '\n';
+      throw std::runtime_error("Failed parsing compilation arguments");
+    }
+    Clang->setInvocation(invocation);
 
     // Map code filename to a memoryBuffer.
     StringRef codeData(code);
