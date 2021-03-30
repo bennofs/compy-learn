@@ -8,7 +8,6 @@
 #include "llvm/Pass.h"
 #include "llvm_extractor.h"
 
-
 namespace compy {
 namespace llvm {
 namespace graph {

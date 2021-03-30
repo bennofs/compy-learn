@@ -25,7 +25,7 @@ graph::ExtractionInfoPtr LLVMIRExtractor::GraphFromString(std::string src) {
 
   passes.push_back(createStripSymbolsPass());
 
-  graph::ExtractorPass* extractorPass = new graph::ExtractorPass();
+  graph::ExtractorPass *extractorPass = new graph::ExtractorPass();
   passes.push_back(extractorPass);
 
   clangDriver_->Invoke(src, frontendActions, passes);
