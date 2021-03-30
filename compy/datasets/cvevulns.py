@@ -38,7 +38,7 @@ class CVEVulnsDataset(dataset.Dataset):
                 continue
             file_path = os.path.join(self.content_dir, "sources_pp", file_meta.pp_name)
             file_data = subprocess.run(
-                ["cpp", file_path] + ["-D" + define for define in file_meta['parsed']['defines']],
+                ['clang', '-w', '-E', '-target', 'x86_64-pc-linux-gnu', file_path] + ["-D" + define for define in file_meta['parsed']['defines']],
                 stdout=subprocess.PIPE,
                 check=True,
             ).stdout

@@ -30,10 +30,10 @@ for builder, visitor, model in combinations:
 
     # Build representation
     clang_driver = ClangDriver(
-        ClangDriver.ProgrammingLanguage.OpenCL,
+        ClangDriver.ProgrammingLanguage.C,
         ClangDriver.OptimizationLevel.O3,
         [],
-        []
+        ['-target', 'x86_64-pc-linux-gnu', '-w']
     )
     clang_driver.setCompilerBinary(clang_binary_path())
 
