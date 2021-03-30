@@ -45,12 +45,12 @@ if [[ $(lsb_release -rs) == "16.04" ]] || [[ $(lsb_release -rs) == "18.04" ]]; t
   if ! grep -q 'llvm-toolchain-.*-10' /etc/apt/sources.list; then
     add_llvm_10_apt_source $(lsb_release -rs)
   fi
+  install_system_packages
 elif [[ $(lsb_release -rs) == "20.04" ]]; then
   echo "OS supported."
+  install_system_packages
 else
-  echo "Non-supported OS. You have to install the packages manually."
-  exit 1
+  echo "Non-supported OS. You have to install the system packages manually."
 fi
 
-install_system_packages
 install_python_packages $1
