@@ -77,10 +77,10 @@ class PyVisitor : public IVisitor {
 
 void registerClangDriver(py::module m) {
   py::class_<CD, std::shared_ptr<CD>> clangDriver(m, "ClangDriver");
-  clangDriver.def(
-      py::init<CD::ProgrammingLanguage, CD::OptimizationLevel,
-          std::vector<std::tuple<std::string, CD::IncludeDirType>>,
-          std::vector<std::string>>())
+  clangDriver
+      .def(py::init<CD::ProgrammingLanguage, CD::OptimizationLevel,
+                    std::vector<std::tuple<std::string, CD::IncludeDirType>>,
+                    std::vector<std::string>>())
       .def("addIncludeDir", &CD::addIncludeDir)
       .def("removeIncludeDir", &CD::removeIncludeDir);
 

@@ -165,10 +165,10 @@ bool ExtractorASTConsumer::HandleTopLevelDecl(DeclGroupRef DR) {
 std::unique_ptr<ASTConsumer> ExtractorFrontendAction::CreateASTConsumer(
     CompilerInstance &CI, StringRef file) {
   extractionInfo.reset(new ExtractionInfo());
-//  CI.getASTContext().getLangOpts().OpenCL
+  //  CI.getASTContext().getLangOpts().OpenCL
 
   return std::make_unique<ExtractorASTConsumer>(CI.getASTContext(),
-                                                 extractionInfo);
+                                                extractionInfo);
 }
 
 }  // namespace graph

@@ -1,3 +1,5 @@
 # Run manually to reformat a file:
 # clang-format -i --style=file <file>
 BasedOnStyle: Google
+IndentWidth: 2
+TabWidth: 2

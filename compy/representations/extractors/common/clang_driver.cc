@@ -75,18 +75,18 @@ void ClangDriver::setOptimizationLevel(OptimizationLevel optimizationLevel) {
 
 void ClangDriver::Invoke(std::string src, std::vector<::clang::FrontendAction *> frontendActions,
                          std::vector<::llvm::Pass *> passes) {
-    const char *filename;
-    switch (programmingLanguage_) {
-        case ProgrammingLanguage::C:
-            filename = "program.c";
-            break;
-        case ProgrammingLanguage::CPLUSPLUS:
-            filename = "program.cc";
-            break;
-        case ProgrammingLanguage::OPENCL:
-            filename = "program.cl";
-            break;
-    }
+  const char *filename;
+  switch (programmingLanguage_) {
+    case ProgrammingLanguage::C:
+      filename = "program.c";
+      break;
+    case ProgrammingLanguage::CPLUSPLUS:
+      filename = "program.cc";
+      break;
+    case ProgrammingLanguage::OPENCL:
+      filename = "program.cl";
+      break;
+  }
     auto code = src.c_str();
 
     std::vector<const char *> args;
@@ -136,7 +136,8 @@ void ClangDriver::Invoke(std::string src, std::vector<::clang::FrontendAction *>
     DiagnosticsEngine Diags(DiagID, &*DiagOpts, DiagsBuffer);
 
     // Initialize CompilerInvocation.
-    CompilerInvocation::CreateFromArgs(Clang->getInvocation(), ArrayRef<const char *>(args), Diags);
+    CompilerInvocation::CreateFromArgs(Clang->getInvocation(),
+                                       ArrayRef<const char *>(args), Diags);
 
     // Map code filename to a memoryBuffer.
     StringRef codeData(code);
