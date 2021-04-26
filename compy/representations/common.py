@@ -146,6 +146,12 @@ class Graph(object):
         data = { n: order for n, order in self.G.nodes(data='seq_order') if order is not None }
         return [nodes_keys.index(n) for n, _ in sorted(data.items(), key=lambda x: x[1])]
 
+    def get_leaf_node_positions(self):
+        """For each node, return the position of this node in the leaf sequence if it is a leaf, None otherwise."""
+        nodes_keys = list(self._get_node_attr_dict().keys())
+        leaves = self.get_leaf_node_list()
+        return [leaves.index(n) if n in leaves else None for n in self.get_node_list()]
+
     def map_to_leaves(self, relations=None):
         """Map inner nodes of the graph to leaf nodes.
 
