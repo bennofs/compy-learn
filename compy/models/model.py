@@ -1,10 +1,13 @@
+import abc
 import pprint
+from abc import abstractmethod
+
 import time
 
 import numpy as np
 
 
-class Model(object):
+class Model(abc.ABC):
     def __init__(self, config):
         pp = pprint.PrettyPrinter(indent=2)
         pp.pprint(config)
@@ -70,8 +73,10 @@ class Model(object):
     def _test_init(self):
         pass
 
+    @abstractmethod
     def _train_with_batch(self, batch):
         raise NotImplementedError
 
+    @abstractmethod
     def _predict_with_batch(self, batch):
         raise NotImplementedError
