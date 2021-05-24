@@ -263,7 +263,7 @@ class SandwichModel(tf.keras.Model):
 
 class Tf2SandwichModel(Model):
 
-    def __init__(self, config=None, num_types=None):
+    def __init__(self, config=None, num_types=None, num_edge_types=4):
         config = {} if config is None else config
         base_config = config.get('base', {})
         ggnn_config = config.get('ggnn', {})
@@ -276,7 +276,7 @@ class Tf2SandwichModel(Model):
             "num_epochs": config.get('num_epochs', 1000),
 
             'base': {
-                "num_edge_types": base_config.get('num_edge_types', num_types),
+                "num_edge_types": base_config.get('num_edge_types', num_edge_types),
                 'hidden_size_orig': base_config.get('hidden_size_orig', num_types),
                 'hidden_dim': base_config.get('hidden_dim', 512),
                 "dropout_rate": base_config.get('dropout_rate', 0.1),
