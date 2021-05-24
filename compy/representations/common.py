@@ -101,6 +101,12 @@ class Graph(object):
         self.__node_types = node_types
         self.__edge_types = edge_types
 
+    def get_node_types(self):
+        return tuple(self.__node_types)
+
+    def get_edge_types(self):
+        return tuple(self.__edge_types)
+
     def _get_node_attr_dict(self):
         return collections.OrderedDict(self.G.nodes(data="attr", default="N/A"))
 
