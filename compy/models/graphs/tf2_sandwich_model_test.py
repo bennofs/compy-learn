@@ -5,7 +5,8 @@ import networkx as nx
 
 from compy.representations.common import Graph
 from compy.representations.sequence_graph import SequenceGraph
-from .tf2_sandwich_model import GGNNLayer, GlobalAttentionLayer, RNNLayer, Tf2SandwichModel, ragged_graph_to_leaf_sequence
+from .tf2_sandwich_model import GGNNLayer, GlobalAttentionLayer, RNNLayer, Tf2SandwichModel, \
+    ragged_graph_to_leaf_sequence, ragged_softmax
 
 tf.compat.v1.enable_eager_execution()
 tf.config.experimental_run_functions_eagerly(True)
@@ -89,6 +90,17 @@ def test_ragged_graph_to_leaf_sequence():
         3, 4, 5,
         7, 9, 6,
     ]))
+
+
+def test_ragged_softmax():
+    values = tf.random.uniform((8,), seed=213)
+    sizes = tf.constant([4, 2, 2])
+    expected = tf.concat([
+        tf.nn.softmax(values[0:4]),
+        tf.nn.softmax(values[4:6]),
+        tf.nn.softmax(values[6:8]),
+    ], axis=0)
+    npt.assert_allclose(ragged_softmax(values, sizes).numpy(), expected.numpy(), rtol=1e-4)
 
 
 def test_train_model():
