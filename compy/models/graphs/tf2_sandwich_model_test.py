@@ -32,14 +32,14 @@ def test_ggnn_layer():
         [1, 2, 3]
     ], dtype=tf.int32)
 
-    out = layer({'states': states, 'edges': edges}, True)
+    out = layer(states, edges, True)
 
 
 def test_global_attention_layer():
     layer = GlobalAttentionLayer()
     inputs = tf.random.uniform([10, 4], seed=0)
     graph_sizes = tf.constant([2, 4, 4])
-    out = layer({'states': inputs, 'graph_sizes': graph_sizes})
+    out = layer(inputs, graph_sizes)
 
     out_gate0 = tf.squeeze(layer.gate_layer(inputs[:2]), -1)
     out_gate0 = tf.nn.softmax(out_gate0)
@@ -58,20 +58,12 @@ def test_rnn_layer():
     graph_sizes = tf.constant([2, 4, 4])
     node_positions = tf.constant([1, 2, 0, 1, 2, 3, 3, 1, 0, 2])
     leaf_mask = tf.constant([True, True, False, True, True, True, True, True, False, True])
-    out = layer({
-        'states': inputs,
-        'graph_sizes': graph_sizes,
-        'node_positions': node_positions
-    }, training=True)
+    out = layer(inputs, node_positions, graph_sizes)
 
     # non-leaf states should stay unchanged
     npt.assert_allclose(tf.boolean_mask(out, ~leaf_mask).numpy(), tf.boolean_mask(inputs, ~leaf_mask).numpy())
 
-    layer({
-        'states': tf.random.uniform([1, 4], seed=0),
-        'graph_sizes': tf.constant([1]),
-        'node_positions': tf.constant([1]),
-    })
+    layer(tf.random.uniform([1, 4], seed=0), tf.constant([1]), tf.constant([1]))
 
 
 def test_ragged_graph_to_leaf_sequence():

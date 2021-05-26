@@ -4,7 +4,6 @@ This implementation is adapted from https://github.com/vhellendoorn/iclr20-great
 import numpy as np
 import tensorflow as tf
 import tensorflow.keras
-import tensorflow.python.keras
 
 from compy.models.model import Model
 
@@ -48,11 +47,9 @@ class GGNNLayer(tf.keras.layers.Layer):
             else:
                 rnn.build(self.hidden_dim)
 
-    def call(self, inputs, training=True, **kwargs):
+    @tf.function(experimental_relax_shapes=True)
+    def call(self, states, edge_ids, training=True, **kwargs):
         """Run the GGNN layer on the given states for the graph specified by edge_ids."""
-        edge_ids = inputs['edges']
-        states = inputs.pop('states')
-
         # Collect some basic details about the graphs in the batch.
         edge_type_ids = tf.dynamic_partition(edge_ids[:, 1:], edge_ids[:, 0], self.num_edge_types)
         message_sources = [type_ids[:, 0] for type_ids in edge_type_ids]
@@ -76,8 +73,7 @@ class GGNNLayer(tf.keras.layers.Layer):
                 else:
                     layer_states[-1] = new_states
         # Return the final layer state.
-        inputs['states'] = layer_states[-1]
-        return inputs
+        return layer_states[-1]
 
     def propagate(self, in_states, layer_no, edge_type_ids, message_sources, message_targets, residuals=None):
         # Collect messages across all edge types.
@@ -133,19 +129,14 @@ class NodeEmbeddingLayer(tensorflow.keras.layers.Layer):
                 axis=0
             )
 
-    def build(self, input_shape):
-        pass
-
-    def call(self, inputs: dict, training=None, mask=None):
-        nodes = inputs.pop('nodes')
-
+    @tf.function(experimental_relax_shapes=True)
+    def call(self, nodes, node_positions):
         states = self.embed(nodes)
         if self.pos_enc is not None:
-            clipped = tf.minimum(nodes[1], len(self.pos_enc) - 1)
+            clipped = tf.minimum(node_positions, len(self.pos_enc) - 1)
             states += tf.gather(self.pos_enc, clipped)
 
-        inputs['states'] = states
-        return inputs
+        return states
 
 
 @tf.function(input_signature=[tf.TensorSpec(shape=(None,)), tf.TensorSpec(shape=(None,), dtype=tf.int32)])
@@ -165,14 +156,8 @@ class GlobalAttentionLayer(tensorflow.keras.layers.Layer):
         self.gate_layer = tf.keras.layers.Dense(1, activation=None)
         self.output_layer = tf.keras.layers.Dense(2, activation=None)
 
-    def build(self, input_shape):
-        self.gate_layer.build(input_shape['states'])
-        self.output_layer.build(input_shape['states'])
-
-    def call(self, inputs, training=None, mask=None):
-        states = inputs.pop('states')
-        graph_sizes = inputs.pop('graph_sizes')
-
+    @tf.function(experimental_relax_shapes=True)
+    def call(self, states, graph_sizes, training=True):
         gate = tf.squeeze(self.gate_layer(states), -1)
         gate = ragged_softmax(gate, graph_sizes)
 
@@ -201,7 +186,7 @@ def ragged_graph_to_leaf_sequence(nodes, node_positions):
 
 
 class RNNLayer(tf.keras.layers.Layer):
-    def __init__(self, model_config, shared_embedding=None, vocab_dim=None):
+    def __init__(self, model_config):
         super(RNNLayer, self).__init__()
         self.hidden_dim = model_config['hidden_dim']
         self.num_layers = model_config['num_layers']
@@ -212,13 +197,11 @@ class RNNLayer(tf.keras.layers.Layer):
         self.rnns_fwd = [tf.keras.layers.GRU(self.hidden_dim // 2, return_sequences=True) for _ in
                          range(self.num_layers)]
 
-    def call(self, inputs, **kwargs):
-        training = kwargs.get('training', True)
-        node_positions = tf.ensure_shape(inputs['node_positions'], tf.shape(inputs['states'])[:1])
-
+    @tf.function(experimental_relax_shapes=True)
+    def call(self, states, node_positions, graph_sizes, training=True):
         # Extract sequence from graph leaves
-        node_positions = tf.RaggedTensor.from_row_lengths(node_positions, inputs['graph_sizes'])
-        states = tf.RaggedTensor.from_row_lengths(inputs['states'], inputs['graph_sizes'])
+        node_positions = tf.RaggedTensor.from_row_lengths(node_positions, graph_sizes)
+        states = tf.RaggedTensor.from_row_lengths(states, graph_sizes)
         sequence = ragged_graph_to_leaf_sequence(states, node_positions)
 
         # Run sequence through all layers.
@@ -230,12 +213,12 @@ class RNNLayer(tf.keras.layers.Layer):
             sequence = tf.ragged.map_flat_values(tf.nn.dropout, sequence, rate=real_dropout_rate)
 
         # Scatter sequence back into graph states
-        orig_indices = tf.range(states.flat_values.shape[0], dtype=tf.int32)
-        orig_indices = tf.RaggedTensor.from_row_lengths(orig_indices, inputs['graph_sizes'])
+        orig_indices = tf.range(tf.shape(states.flat_values)[0], dtype=tf.int32)
+        orig_indices = tf.RaggedTensor.from_row_lengths(orig_indices, graph_sizes)
         dest_indices = ragged_graph_to_leaf_sequence(orig_indices, node_positions)
         dest_indices = tf.expand_dims(dest_indices.flat_values, axis=-1)
 
-        return dict(inputs, states=tf.tensor_scatter_nd_update(states.flat_values, dest_indices, sequence.flat_values))
+        return tf.tensor_scatter_nd_update(states.flat_values, dest_indices, sequence.flat_values)
 
 
 class SandwichModel(tf.keras.Model):
@@ -248,17 +231,24 @@ class SandwichModel(tf.keras.Model):
         for layer in ('embed', 'rnn', 'ggnn'):
             layer_config[layer] = dict(config['base'], **config.get(layer, {}))
 
-        self.stack = [NodeEmbeddingLayer(layer_config['embed'])]
+        self.embed = NodeEmbeddingLayer(layer_config['embed'])
+        self.attention = GlobalAttentionLayer()
 
+        self.stack = []
         for layer in config['layers']:
-            self.stack += [SandwichModel.LAYER_CLASSES[layer](layer_config[layer])]
+            self.stack += [(layer, SandwichModel.LAYER_CLASSES[layer](layer_config[layer]))]
 
-        self.stack += [GlobalAttentionLayer()]
+    @tf.function(experimental_relax_shapes=True)
+    def call(self, nodes, edges, node_positions, graph_sizes, training=True, mask=None):
+        states = self.embed(nodes, node_positions)
 
-    def call(self, inputs, training=None, mask=None):
-        for layer in self.stack:
-            inputs = layer(inputs)
-        return inputs
+        for kind, layer in self.stack:
+            if kind == 'ggnn':
+                states = layer(states, edges)
+            if kind == 'rnn':
+                states = layer(states, node_positions, graph_sizes)
+
+        return self.attention(states, graph_sizes)
 
 
 class Tf2SandwichModel(Model):
@@ -354,7 +344,7 @@ class Tf2SandwichModel(Model):
         y_true = tf.constant([g['label'] for g in batch])
 
         with tf.GradientTape() as tape:
-            y = self.model(x, training=True)
+            y = self.model(**x, training=True)
             loss = loss_func(y_true, y)
         grads = tape.gradient(loss, self.model.trainable_variables)
         accuracy.update_state(y_true, y)
@@ -364,7 +354,8 @@ class Tf2SandwichModel(Model):
     def _predict_with_batch(self, batch):
         x = self.__batch_graphs(batch)
         y_true = tf.constant([g['label'] for g in batch])
-        y = self.model(x, training=False)
+        y = self.model(**x, training=False)
+
         accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
         accuracy.update_state(y_true, y)
         return accuracy.result().numpy(), y
