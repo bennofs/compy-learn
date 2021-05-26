@@ -4,87 +4,12 @@ This implementation is adapted from https://github.com/vhellendoorn/iclr20-great
 import numpy as np
 import tensorflow as tf
 import tensorflow.keras
-from typing import List, Union, Optional
+import tensorflow.python.keras
 
 from compy.models.model import Model
 
 
-def flatten_1d(tensor: Union[tf.Tensor, tf.RaggedTensor]):
-    """Convert a tensor or ragged tensor into a 1d-tensor by flattening outer dimensions."""
-    flat_values = tensor
-    if isinstance(tensor, tf.RaggedTensor):
-        flat_values = tensor.flat_values
-
-    shape = tf.shape(flat_values)
-    return tf.reshape(flat_values, (tf.reduce_prod(shape), ))
-
-
-@tf.function(autograph=False)
-def flatten_graph_batch(batch: Union[tf.Tensor, tf.RaggedTensor]):
-    """Turn a possibly-ragged graph batch of shape [batch, N, H] into a flat sequence of graph nodes and offsets..
-
-    Return a tuple of the flattened batch (shape [K, H]) and start indices (shape [batch]) for each graph.
-
-    For example for a batch of 3 graphs with 3, 1 and 2 nodes, returns a tensor of all 6 nodes and
-    the indices [0,3,4] representing the start of each graph in the flattened sequence.
-    """
-    assert len(batch.shape) >= 2, "batch must have at least rank 2"
-    assert batch.shape[-1] is not None, "node dimension must be fixed"
-
-    # case: already flattened
-    if len(batch.shape) == 2:
-        return batch, tf.constant(0), tf.identity
-
-    # case: no ragged dimensions
-    if isinstance(batch, tf.Tensor):
-        batch_shape = tf.shape(batch)
-        n_per_batch = batch_shape[-2]
-        outer_dim = batch_shape[:-2]
-        num_batches = tf.reduce_prod(outer_dim)
-
-        offsets = n_per_batch * tf.range(num_batches)
-        offsets = tf.reshape(offsets, outer_dim)
-
-        def repack(flat):
-            return tf.reshape(flat, batch_shape)
-        return tf.reshape(batch, (num_batches * n_per_batch, tf.shape(batch)[-1])), offsets, repack
-
-    # case: each graph has the same number of nodes (N is not ragged)
-    if len(batch.flat_values.shape) > 2:
-        flat_shape = tf.shape(batch.flat_values)
-        n_per_batch = flat_shape[-2]
-        outer_dim = flat_shape[:-2]
-        num_batches = tf.reduce_prod(outer_dim)
-
-        offsets = n_per_batch * tf.range(num_batches)
-        offsets = tf.reshape(offsets, outer_dim)
-        offsets = tf.RaggedTensor.from_nested_row_splits(offsets, batch.nested_row_splits)
-        splits = batch.nested_row_splits
-
-        def repack(flat):
-            return tf.RaggedTensor.from_nested_row_splits(
-                tf.reshape(flat, flat_shape),
-                splits
-            )
-        return tf.reshape(batch.flat_values, (num_batches * n_per_batch, flat_shape[-1])), offsets, repack
-
-    # case: N is ragged
-    splits = batch.nested_row_splits
-    offsets = batch.nested_row_splits[-1][:-1]
-    offsets = tf.RaggedTensor.from_nested_row_lengths(
-        offsets, batch.nested_row_lengths()[:-1]
-    )
-
-    def repack(flat):
-        return tf.RaggedTensor.from_nested_row_splits(flat, splits)
-    return batch.flat_values, offsets, repack
-
-
 class GGNNLayer(tf.keras.layers.Layer):
-    rnns: List[tf.keras.layers.GRUCell]
-    type_weights: List[List[tf.Variable]]
-    type_biases: List[List[tf.Variable]]
-
     def __init__(self, model_config):
         super(GGNNLayer, self).__init__()
         self.num_edge_types = model_config['num_edge_types']
@@ -100,25 +25,21 @@ class GGNNLayer(tf.keras.layers.Layer):
         self.add_type_bias = model_config['add_type_bias']
         self.dropout_rate = model_config['dropout_rate']
 
-        self._supports_ragged_inputs = True
-
     def build(self, _):
         # Small util functions
         random_init = tf.random_normal_initializer(stddev=self.hidden_dim ** -0.5)
 
         def make_weight(name=None):
-            return self.add_weight(initializer=random_init, shape=(self.hidden_dim, self.hidden_dim), name=name)
+            return tf.Variable(random_init([self.hidden_dim, self.hidden_dim]), name=name)
 
         def make_bias(name=None):
-            return self.add_weight(initializer=random_init, shape=(self.hidden_dim,), name=name)
+            return tf.Variable(random_init([self.hidden_dim]), name=name)
 
         # Set up type-transforms and GRUs
-        self.type_weights = [[make_weight('type-' + str(j) + '-' + str(i)) for i in range(self.num_edge_types)]
-                             for j in range(self.num_layers)]
-        self.type_biases = []
-        if self.add_type_bias:
-            self.type_biases = [[make_bias('bias-' + str(j) + '-' + str(i)) for i in range(self.num_edge_types)]
-                                for j in range(self.num_layers)]
+        self.type_weights = [[make_weight('type-' + str(j) + '-' + str(i)) for i in range(self.num_edge_types)] for j in
+                             range(self.num_layers)]
+        self.type_biases = [[make_bias('bias-' + str(j) + '-' + str(i)) for i in range(self.num_edge_types)] for j in
+                            range(self.num_layers)]
         self.rnns = [tf.keras.layers.GRUCell(self.hidden_dim) for _ in range(self.num_layers)]
         for ix, rnn in enumerate(self.rnns):
             # Initialize the GRUs input dimension based on whether any residuals will be passed in.
@@ -127,44 +48,15 @@ class GGNNLayer(tf.keras.layers.Layer):
             else:
                 rnn.build(self.hidden_dim)
 
-    @staticmethod
-    def _flatten_graph(states: Union[tf.Tensor, tf.RaggedTensor], edges: Union[tf.Tensor, tf.RaggedTensor]):
-        flat_states, offsets, repack = flatten_graph_batch(states)
-
-        offsets = tf.expand_dims(tf.cast(offsets, dtype=edges.dtype), -1)
-
-        new_src = edges[..., 1] + offsets
-        new_dst = edges[..., 2] + offsets
-
-        edges = tf.stack([
-            flatten_1d(edges[..., 0]),
-            flatten_1d(new_src),
-            flatten_1d(new_dst),
-        ], axis=-1)
-
-        return flat_states, edges, repack
-
-    @tf.function(experimental_relax_shapes=True)
-    def call(self, states: tf.Tensor, edges: tf.Tensor, training=True, mask=None):
-        """Run the GGNN layer on the given states for the graph specified by edges.
-
-        Parameters:
-
-            :param states: Tensor of shape [num_nodes, hidden_dim] with initial state for each node
-            :param edges: Tensor of shape [num_edges, 3] representing edges as (type, source, dest) tuples
-            :param training: True for training mode (dropout is applied in training but not for inference)
-            :param mask: Keras mask (ignored by this layer)
-        """
-        assert states.shape is not None, "rank of states tensor must not be dynamic"
-        assert len(states.shape) >= 2, "rank of states tensor must be at least 2"
-        assert len(edges.shape) == len(states.shape), "rank of states and edges must match"
-
-        states, edges, repack = self._flatten_graph(states, edges)
+    def call(self, inputs, training=True, **kwargs):
+        """Run the GGNN layer on the given states for the graph specified by edge_ids."""
+        edge_ids = inputs['edges']
+        states = inputs.pop('states')
 
         # Collect some basic details about the graphs in the batch.
-        edge_type_ids = tf.dynamic_partition(edges[..., 1:], edges[..., 0], self.num_edge_types)
-        message_sources = [type_ids[..., 0] for type_ids in edge_type_ids]
-        message_targets = [type_ids[..., 1] for type_ids in edge_type_ids]
+        edge_type_ids = tf.dynamic_partition(edge_ids[:, 1:], edge_ids[:, 0], self.num_edge_types)
+        message_sources = [type_ids[:, 0] for type_ids in edge_type_ids]
+        message_targets = [type_ids[:, 1] for type_ids in edge_type_ids]
 
         # Initialize the node_states with embeddings
         # then, propagate through layers and number of time steps for each layer.
@@ -183,9 +75,9 @@ class GGNNLayer(tf.keras.layers.Layer):
                     layer_states.append(new_states)
                 else:
                     layer_states[-1] = new_states
-
         # Return the final layer state.
-        return repack(layer_states[-1])
+        inputs['states'] = layer_states[-1]
+        return inputs
 
     def propagate(self, in_states, layer_no, edge_type_ids, message_sources, message_targets, residuals=None):
         # Collect messages across all edge types.
@@ -241,30 +133,30 @@ class NodeEmbeddingLayer(tensorflow.keras.layers.Layer):
                 axis=0
             )
 
-        self._supports_ragged_inputs = True
+    def build(self, input_shape):
+        pass
 
-    @tf.function(experimental_relax_shapes=True)
-    def call(self, nodes, node_positions):
+    def call(self, inputs: dict, training=None, mask=None):
+        nodes = inputs.pop('nodes')
+
         states = self.embed(nodes)
         if self.pos_enc is not None:
-            clipped = tf.minimum(node_positions, len(self.pos_enc) - 1)
+            clipped = tf.minimum(nodes[1], len(self.pos_enc) - 1)
             states += tf.gather(self.pos_enc, clipped)
 
-        return states
+        inputs['states'] = states
+        return inputs
 
 
-
-@tf.function(experimental_relax_shapes=True)
-def ragged_softmax(x: tf.Tensor, mask: Optional[tf.Tensor] = None):
-    """Compute the softmax for each batch in x. In contrast to tf.nn.softmax, x can be a ragged tensor."""
-    # softmax(a+c) = softmax(a), improves numerical stability
-    x = x - tf.expand_dims(tf.reduce_max(x, axis=-1), -1)
-    x = tf.exp(x)
+@tf.function(input_signature=[tf.TensorSpec(shape=(None,)), tf.TensorSpec(shape=(None,), dtype=tf.int32)])
+def ragged_softmax(values, sizes):
+    values = values - tf.reduce_max(values)  # softmax(a+c) = softmax(a), improves numerical stability
+    values = tf.exp(values)
+    values = tf.RaggedTensor.from_row_lengths(values, sizes)
 
     # compute softmax
-    masked = x if mask is None else x * tf.cast(mask, dtype=x.dtype)
-    sums = tf.expand_dims(tf.reduce_sum(masked, axis=-1), -1)
-    return masked / (sums + 1e-16)
+    sums = tf.expand_dims(tf.reduce_sum(values, axis=-1), -1)
+    return (values / (sums + 1e-16)).flat_values
 
 
 class GlobalAttentionLayer(tensorflow.keras.layers.Layer):
@@ -273,16 +165,20 @@ class GlobalAttentionLayer(tensorflow.keras.layers.Layer):
         self.gate_layer = tf.keras.layers.Dense(1, activation=None)
         self.output_layer = tf.keras.layers.Dense(2, activation=None)
 
-        self._supports_ragged_inputs = True
+    def build(self, input_shape):
+        self.gate_layer.build(input_shape['states'])
+        self.output_layer.build(input_shape['states'])
 
-    @tf.function(experimental_relax_shapes=True)
-    def call(self, states, training=True, mask=None):
-        gate = tf.ragged.map_flat_values(lambda x: tf.squeeze(self.gate_layer(x), -1), states)
-        gate = ragged_softmax(gate, mask=mask)
+    def call(self, inputs, training=None, mask=None):
+        states = inputs.pop('states')
+        graph_sizes = inputs.pop('graph_sizes')
 
-        outputs = tf.ragged.map_flat_values(self.output_layer, states)
-        outputs = tf.ragged.map_flat_values(tf.einsum, '...ij,...i->...ij', outputs, gate)
-        return tf.reduce_sum(outputs, axis=1)
+        gate = tf.squeeze(self.gate_layer(states), -1)
+        gate = ragged_softmax(gate, graph_sizes)
+
+        outputs = self.output_layer(states)
+        outputs = tf.einsum('ij,i->ij', outputs, gate)
+        return tf.reduce_sum(tf.RaggedTensor.from_row_lengths(outputs, graph_sizes), axis=1)
 
 
 def ragged_graph_to_leaf_sequence(nodes, node_positions):
@@ -300,7 +196,7 @@ def ragged_graph_to_leaf_sequence(nodes, node_positions):
         tf.scatter_nd,
         flat_indices,
         leaf_nodes,
-        shape=tf.shape(leaf_nodes.flat_values),
+        shape=leaf_nodes.flat_values.shape
     )
 
 
@@ -316,18 +212,14 @@ class RNNLayer(tf.keras.layers.Layer):
         self.rnns_fwd = [tf.keras.layers.GRU(self.hidden_dim // 2, return_sequences=True) for _ in
                          range(self.num_layers)]
 
-        self._supports_ragged_inputs = True
-
-    @tf.function(experimental_relax_shapes=True)
-    def call(self, states: Union[tf.RaggedTensor, tf.Tensor],
-             node_positions: Union[tf.RaggedTensor, tf.Tensor],
-             training=True, mask=None):
-        assert node_positions.shape.is_compatible_with(states.shape[:-1]), "must have node position for each state"
+    def call(self, inputs, **kwargs):
+        training = kwargs.get('training', True)
+        node_positions = tf.ensure_shape(inputs['node_positions'], tf.shape(inputs['states'])[:1])
 
         # Extract sequence from graph leaves
+        node_positions = tf.RaggedTensor.from_row_lengths(node_positions, inputs['graph_sizes'])
+        states = tf.RaggedTensor.from_row_lengths(inputs['states'], inputs['graph_sizes'])
         sequence = ragged_graph_to_leaf_sequence(states, node_positions)
-        tf.assert_greater(sequence.row_lengths(), tf.zeros_like(sequence.row_lengths()),
-                          "each batch must have at least one sequence token")
 
         # Run sequence through all layers.
         real_dropout_rate = self.dropout_rate * tf.cast(training, 'float32')
@@ -338,12 +230,12 @@ class RNNLayer(tf.keras.layers.Layer):
             sequence = tf.ragged.map_flat_values(tf.nn.dropout, sequence, rate=real_dropout_rate)
 
         # Scatter sequence back into graph states
-        orig_indices = tf.range(tf.shape(states.flat_values)[0], dtype=tf.int32)
-        orig_indices = tf.RaggedTensor.from_row_splits(orig_indices, states.row_splits)
+        orig_indices = tf.range(states.flat_values.shape[0], dtype=tf.int32)
+        orig_indices = tf.RaggedTensor.from_row_lengths(orig_indices, inputs['graph_sizes'])
         dest_indices = ragged_graph_to_leaf_sequence(orig_indices, node_positions)
         dest_indices = tf.expand_dims(dest_indices.flat_values, axis=-1)
 
-        return tf.ragged.map_flat_values(tf.tensor_scatter_nd_update, states, dest_indices, sequence.flat_values)
+        return dict(inputs, states=tf.tensor_scatter_nd_update(states.flat_values, dest_indices, sequence.flat_values))
 
 
 class SandwichModel(tf.keras.Model):
@@ -356,23 +248,17 @@ class SandwichModel(tf.keras.Model):
         for layer in ('embed', 'rnn', 'ggnn'):
             layer_config[layer] = dict(config['base'], **config.get(layer, {}))
 
-        self.embed = NodeEmbeddingLayer(layer_config['embed'])
+        self.stack = [NodeEmbeddingLayer(layer_config['embed'])]
 
-        self.stack = []
         for layer in config['layers']:
-            self.stack += [(layer, SandwichModel.LAYER_CLASSES[layer](layer_config[layer]))]
+            self.stack += [SandwichModel.LAYER_CLASSES[layer](layer_config[layer])]
 
-        self.global_attention = GlobalAttentionLayer()
+        self.stack += [GlobalAttentionLayer()]
 
-    @tf.function(experimental_relax_shapes=True)
-    def call(self, nodes, edges, node_positions, training=None, mask=None):
-        states = self.embed(nodes, node_positions=node_positions)
-        for kind, layer in self.stack:
-            if kind == 'rnn':
-                states = layer(states, node_positions=node_positions)
-            if kind == 'ggnn':
-                states = layer(states, edges=edges)
-        return self.global_attention(states)
+    def call(self, inputs, training=None, mask=None):
+        for layer in self.stack:
+            inputs = layer(inputs)
+        return inputs
 
 
 class Tf2SandwichModel(Model):
@@ -415,6 +301,7 @@ class Tf2SandwichModel(Model):
         super().__init__(config)
         self.model = SandwichModel(config)
 
+
     @staticmethod
     def __process_data(samples):
         return [
@@ -436,6 +323,7 @@ class Tf2SandwichModel(Model):
         nodes = []
         node_positions = []
         edge_tensors = []
+        num_nodes_so_far = 0
 
         for idx, graph in enumerate(batch):
             batch_nodes = np.array(graph['nodes'], dtype=np.int32)
@@ -446,14 +334,17 @@ class Tf2SandwichModel(Model):
             node_positions.append(batch_node_positions)
 
             batch_edges = np.array([
-                (typ, s, t)
+                (typ, idx, s + num_nodes_so_far, t + num_nodes_so_far)
                 for typ, s, t in zip(*graph["edges"])
             ], dtype=np.int32)
             edge_tensors.append(batch_edges)
+            num_nodes_so_far += len(graph["nodes"])
+
         return {
-            'nodes': tf.ragged.constant(nodes),
-            'node_positions': tf.ragged.constant(node_positions),
-            'edges': tf.ragged.constant(edge_tensors, inner_shape=(3,), dtype=tf.int32),
+            'nodes': tf.constant(np.concatenate(nodes, axis=0)),
+            'node_positions': tf.constant(np.concatenate(node_positions, axis=0)),
+            'graph_sizes': tf.constant([len(g["nodes"]) for g in batch], dtype=tf.int32),
+            'edges': tf.constant(np.concatenate(edge_tensors, axis=0))
         }
 
     def _train_with_batch(self, batch):
@@ -463,7 +354,7 @@ class Tf2SandwichModel(Model):
         y_true = tf.constant([g['label'] for g in batch])
 
         with tf.GradientTape() as tape:
-            y = self.model(nodes=x['nodes'], edges=x['edges'], node_positions=x['node_positions'], training=True)
+            y = self.model(x, training=True)
             loss = loss_func(y_true, y)
         grads = tape.gradient(loss, self.model.trainable_variables)
         accuracy.update_state(y_true, y)
@@ -473,7 +364,7 @@ class Tf2SandwichModel(Model):
     def _predict_with_batch(self, batch):
         x = self.__batch_graphs(batch)
         y_true = tf.constant([g['label'] for g in batch])
-        y = self.model(nodes=x['nodes'], edges=x['edges'], node_positions=x['node_positions'], training=False)
+        y = self.model(x, training=False)
         accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
         accuracy.update_state(y_true, y)
         return accuracy.result().numpy(), y
