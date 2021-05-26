@@ -26,10 +26,10 @@ class Vocabulary:
 
     @staticmethod
     def load(file: Union[str, BinaryIO, pathlib.Path]) -> 'Vocabulary':
-        return Vocabulary(**np.load(file, allow_pickle=False))
+        return Vocabulary(**np.load(file, allow_pickle=True))
 
     def save(self, file: Union[str, BinaryIO, pathlib.Path]):
-        np.save(file, node_kinds=self.node_kinds, edge_kinds=self.edge_kinds)
+        np.savez(file, node_kinds=self.node_kinds, edge_kinds=self.edge_kinds)
 
 
 @dataclass
@@ -131,7 +131,7 @@ class SequenceGraphBuilder(RepresentationBuilder):
         self.__graph_builder.print_tokens()
 
     def vocabulary(self):
-        return Vocabulary(np.array(self.__node_kinds), np.array(self.__node_kinds))
+        return Vocabulary(np.array(self.__node_kinds, dtype=object), np.array(self.__edge_kinds))
 
     def string_to_info(self, src: Union[str, bytes], additional_include_dir: Optional[str] = None,
                        filename: Optional[str] = None) -> Any:
