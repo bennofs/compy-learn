@@ -181,7 +181,7 @@ def ragged_graph_to_leaf_sequence(nodes, node_positions):
         tf.scatter_nd,
         flat_indices,
         leaf_nodes,
-        shape=leaf_nodes.flat_values.shape
+        shape=tf.shape(leaf_nodes.flat_values)
     )
 
 
@@ -349,6 +349,7 @@ class Tf2SandwichModel(Model):
         grads = tape.gradient(loss, self.model.trainable_variables)
         accuracy.update_state(y_true, y)
         self.opt.apply_gradients(zip(grads, self.model.trainable_variables))
+
         return loss, accuracy.result().numpy()
 
     def _predict_with_batch(self, batch):

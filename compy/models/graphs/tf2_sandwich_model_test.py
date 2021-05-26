@@ -9,7 +9,7 @@ from .tf2_sandwich_model import GGNNLayer, GlobalAttentionLayer, RNNLayer, Tf2Sa
     ragged_graph_to_leaf_sequence, ragged_softmax
 
 tf.compat.v1.enable_eager_execution()
-tf.config.experimental_run_functions_eagerly(True)
+# tf.config.experimental_run_functions_eagerly(True) # turn on for debugging
 
 
 def test_ggnn_layer():
