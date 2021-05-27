@@ -139,15 +139,18 @@ class NodeEmbeddingLayer(tensorflow.keras.layers.Layer):
         return states
 
 
-@tf.function(input_signature=[tf.TensorSpec(shape=(None,)), tf.TensorSpec(shape=(None,), dtype=tf.int32)])
-def ragged_softmax(values, sizes):
+@tf.function(input_signature=[
+    tf.TensorSpec(shape=(None,)),
+    tf.TensorSpec(shape=(None,), dtype=tf.int32),
+    tf.TensorSpec(shape=(None,), dtype=tf.int32)
+])
+def segment_softmax(values, sizes, segments):
     values = values - tf.reduce_max(values)  # softmax(a+c) = softmax(a), improves numerical stability
     values = tf.exp(values)
-    values = tf.RaggedTensor.from_row_lengths(values, sizes)
 
     # compute softmax
-    sums = tf.expand_dims(tf.reduce_sum(values, axis=-1), -1)
-    return (values / (sums + 1e-16)).flat_values
+    sums = tf.repeat(tf.math.segment_sum(values, segments), sizes)
+    return values / (sums + 1e-16)
 
 
 class GlobalAttentionLayer(tensorflow.keras.layers.Layer):
@@ -158,12 +161,14 @@ class GlobalAttentionLayer(tensorflow.keras.layers.Layer):
 
     @tf.function(experimental_relax_shapes=True)
     def call(self, states, graph_sizes, training=True):
+        segments = tf.repeat(tf.range(tf.shape(graph_sizes)[0]), graph_sizes)
+
         gate = tf.squeeze(self.gate_layer(states), -1)
-        gate = ragged_softmax(gate, graph_sizes)
+        gate = segment_softmax(gate, graph_sizes, segments)
 
         outputs = self.output_layer(states)
         outputs = tf.einsum('ij,i->ij', outputs, gate)
-        return tf.reduce_sum(tf.RaggedTensor.from_row_lengths(outputs, graph_sizes), axis=1)
+        return tf.math.segment_sum(outputs, segments)
 
 
 def ragged_graph_to_leaf_sequence(nodes, node_positions):
