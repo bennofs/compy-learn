@@ -20,6 +20,8 @@ class Model(abc.ABC):
 
         print()
         for epoch in range(self.config["num_epochs"]):
+            self._epoch_init(epoch)
+
             batch_size = self.config["batch_size"]
             np.random.shuffle(data_train)
             batches = [
@@ -71,6 +73,9 @@ class Model(abc.ABC):
         return data_train, data_valid
 
     def _test_init(self):
+        pass
+
+    def _epoch_init(self, epoch):
         pass
 
     @abstractmethod

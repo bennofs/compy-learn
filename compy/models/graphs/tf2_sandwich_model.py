@@ -11,6 +11,8 @@ from compy.models.model import Model
 class GGNNLayer(tf.keras.layers.Layer):
     def __init__(self, model_config):
         super(GGNNLayer, self).__init__()
+        self._model_config = model_config
+
         self.num_edge_types = model_config['num_edge_types']
         # The main GGNN configuration is provided as a list of 'time-steps', which describes how often each layer is
         # repeated. E.g., an 8-step GGNN with 4 distinct layers repeated 3 and 1 times alternatingly can represented
@@ -23,6 +25,10 @@ class GGNNLayer(tf.keras.layers.Layer):
         self.hidden_dim = model_config['hidden_dim']
         self.add_type_bias = model_config['add_type_bias']
         self.dropout_rate = model_config['dropout_rate']
+
+    def get_config(self):
+        base_config = super(GGNNLayer, self).get_config()
+        return dict(base_config, model_config=self._model_config)
 
     def build(self, _):
         # Small util functions
@@ -48,10 +54,10 @@ class GGNNLayer(tf.keras.layers.Layer):
                 rnn.build(self.hidden_dim)
 
     @tf.function(experimental_relax_shapes=True)
-    def call(self, states, edge_ids, training=True, **kwargs):
-        """Run the GGNN layer on the given states for the graph specified by edge_ids."""
+    def call(self, states, edges, training=True, **kwargs):
+        """Run the GGNN layer on the given states for the graph specified by ``edges``."""
         # Collect some basic details about the graphs in the batch.
-        edge_type_ids = tf.dynamic_partition(edge_ids[:, 1:], edge_ids[:, 0], self.num_edge_types)
+        edge_type_ids = tf.dynamic_partition(edges[:, 1:], edges[:, 0], self.num_edge_types)
         message_sources = [type_ids[:, 0] for type_ids in edge_type_ids]
         message_targets = [type_ids[:, 1] for type_ids in edge_type_ids]
 
@@ -117,6 +123,7 @@ class NodeEmbeddingLayer(tensorflow.keras.layers.Layer):
 
     def __init__(self, config, **kwargs):
         super().__init__(**kwargs)
+        self._config = config
         self.hidden_size = config["hidden_dim"]
         self.num_classes = config["hidden_size_orig"]
         self.embed = tf.keras.layers.Embedding(self.num_classes, self.hidden_size)
@@ -128,6 +135,10 @@ class NodeEmbeddingLayer(tensorflow.keras.layers.Layer):
                 [tf.zeros((1, self.hidden_size)), positional_encoding(self.hidden_size, length)],
                 axis=0
             )
+
+    def get_config(self):
+        base_config = super(NodeEmbeddingLayer, self).get_config()
+        return dict(base_config, config=self._config)
 
     @tf.function(experimental_relax_shapes=True)
     def call(self, nodes, node_positions):
@@ -193,6 +204,7 @@ def ragged_graph_to_leaf_sequence(nodes, node_positions):
 class RNNLayer(tf.keras.layers.Layer):
     def __init__(self, model_config):
         super(RNNLayer, self).__init__()
+        self._model_config = model_config
         self.hidden_dim = model_config['hidden_dim']
         self.num_layers = model_config['num_layers']
         self.dropout_rate = model_config['dropout_rate']
@@ -201,6 +213,10 @@ class RNNLayer(tf.keras.layers.Layer):
                          range(self.num_layers)]
         self.rnns_fwd = [tf.keras.layers.GRU(self.hidden_dim // 2, return_sequences=True) for _ in
                          range(self.num_layers)]
+
+    def get_config(self):
+        base_config = super(RNNLayer, self).get_config()
+        return dict(base_config, model_config=self._model_config)
 
     @tf.function(experimental_relax_shapes=True)
     def call(self, states, node_positions, graph_sizes, training=True):
@@ -226,39 +242,39 @@ class RNNLayer(tf.keras.layers.Layer):
         return tf.tensor_scatter_nd_update(states.flat_values, dest_indices, sequence.flat_values)
 
 
-class SandwichModel(tf.keras.Model):
-    LAYER_CLASSES = {'rnn': RNNLayer, 'ggnn': GGNNLayer}
+def sandwich_model(config):
+    layer_config = {}
+    for layer in ('embed', 'rnn', 'ggnn'):
+        layer_config[layer] = dict(config['base'], **config.get(layer, {}))
 
-    def __init__(self, config, **kwargs):
-        super().__init__(**kwargs)
+    # inputs
+    nodes = tf.keras.Input(shape=(), dtype=tf.int32, name="nodes")
+    node_positions = tf.keras.Input(shape=(), dtype=tf.int32, name="node_positions")
+    edges = tf.keras.Input(shape=(3,), dtype=tf.int32, name="edges")
+    graph_sizes = tf.keras.Input(shape=(), dtype=tf.int32, name="graph_sizes")
 
-        layer_config = {}
-        for layer in ('embed', 'rnn', 'ggnn'):
-            layer_config[layer] = dict(config['base'], **config.get(layer, {}))
+    # compute graph embeddings
+    states = NodeEmbeddingLayer(layer_config['embed'])(nodes=nodes, node_positions=node_positions)
+    for layer_kind in config['layers']:
+        if layer_kind == 'rnn':
+            states = RNNLayer(layer_config['rnn'])(states=states, node_positions=node_positions,
+                                                   graph_sizes=graph_sizes)
+            continue
 
-        self.embed = NodeEmbeddingLayer(layer_config['embed'])
-        self.attention = GlobalAttentionLayer()
+        if layer_kind == 'ggnn':
+            states = GGNNLayer(layer_config['ggnn'])(states=states, edges=edges)
+            continue
 
-        self.stack = []
-        for layer in config['layers']:
-            self.stack += [(layer, SandwichModel.LAYER_CLASSES[layer](layer_config[layer]))]
+        raise ValueError("unknown model layer type: " + layer_kind + ", expected one of [ggnn, rnn]")
 
-    @tf.function(experimental_relax_shapes=True)
-    def call(self, nodes, edges, node_positions, graph_sizes, training=True, mask=None):
-        states = self.embed(nodes, node_positions)
-
-        for kind, layer in self.stack:
-            if kind == 'ggnn':
-                states = layer(states, edges)
-            if kind == 'rnn':
-                states = layer(states, node_positions, graph_sizes)
-
-        return self.attention(states, graph_sizes)
+    # outputs
+    output = GlobalAttentionLayer()(states=states, graph_sizes=graph_sizes)
+    return tf.keras.Model(inputs=(nodes, node_positions, edges, graph_sizes), outputs=output)
 
 
 class Tf2SandwichModel(Model):
 
-    def __init__(self, config=None, num_types=None, num_edge_types=4):
+    def __init__(self, config=None, num_types=None, num_edge_types=4, keras_callbacks=None):
         config = {} if config is None else config
         base_config = config.get('base', {})
         ggnn_config = config.get('ggnn', {})
@@ -294,8 +310,11 @@ class Tf2SandwichModel(Model):
         }
 
         super().__init__(config)
-        self.model = SandwichModel(config)
 
+        self.model = sandwich_model(config)
+        self._callbacks = tf.keras.callbacks.CallbackList(keras_callbacks, model=self.model)
+        self._step = 0
+        self._epoch = 0
 
     @staticmethod
     def __process_data(samples):
@@ -309,9 +328,29 @@ class Tf2SandwichModel(Model):
             for sample in samples
         ]
 
+    def _epoch_init(self, epoch):
+        if epoch > 0:
+            self._callbacks.on_epoch_end(epoch - 1)
+
+        self._epoch = epoch
+        self._step = 0
+
+        self._callbacks.on_epoch_begin(self._epoch)
+
     def _train_init(self, data_train, data_valid):
-        self.opt = tf.keras.optimizers.Adam(learning_rate=self.config["learning_rate"])
+        self.model.compile(
+            optimizer=tf.keras.optimizers.Adam(learning_rate=self.config["learning_rate"]),
+            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+            metrics=['accuracy']
+        )
+        self._callbacks.on_train_begin()
+
         return self.__process_data(data_train), self.__process_data(data_valid)
+
+    def _test_init(self):
+        super()._test_init()
+        self._callbacks.on_test_begin()
+        self._step = 0
 
     @staticmethod
     def __batch_graphs(batch):
@@ -329,10 +368,10 @@ class Tf2SandwichModel(Model):
             node_positions.append(batch_node_positions)
 
             batch_edges = np.array([
-                (typ, idx, s + num_nodes_so_far, t + num_nodes_so_far)
+                (typ, s + num_nodes_so_far, t + num_nodes_so_far)
                 for typ, s, t in zip(*graph["edges"])
             ], dtype=np.int32)
-            edge_tensors.append(batch_edges)
+            edge_tensors.append(tf.constant(batch_edges, shape=(len(batch_edges), 3)))
             num_nodes_so_far += len(graph["nodes"])
 
         return {
@@ -343,25 +382,35 @@ class Tf2SandwichModel(Model):
         }
 
     def _train_with_batch(self, batch):
-        x = self.__batch_graphs(batch)
-        loss_func = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-        accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
-        y_true = tf.constant([g['label'] for g in batch])
+        with tf.profiler.experimental.Trace(
+                name='train', epoch_num=self._epoch, step_num=self._step, batch_size=len(batch), _r=1):
+            self._callbacks.on_train_batch_begin(self._step)
 
-        with tf.GradientTape() as tape:
-            y = self.model(**x, training=True)
-            loss = loss_func(y_true, y)
-        grads = tape.gradient(loss, self.model.trainable_variables)
-        accuracy.update_state(y_true, y)
-        self.opt.apply_gradients(zip(grads, self.model.trainable_variables))
+            x = self.__batch_graphs(batch)
+            y_true = tf.constant([g['label'] for g in batch])
 
-        return loss, accuracy.result().numpy()
+            data = tf.data.Dataset.from_tensors((x, y_true))
+            self.model.reset_metrics()
+            result = self.model.make_train_function()(iter(data))
+            result = {k: v.numpy() for k, v in result.items()}
+
+            self._callbacks.on_train_batch_end(self._step, result)
+
+        self._step += 1
+
+        return result['loss'], result['accuracy']
 
     def _predict_with_batch(self, batch):
+        self._callbacks.on_predict_batch_begin(self._step)
+
         x = self.__batch_graphs(batch)
         y_true = tf.constant([g['label'] for g in batch])
-        y = self.model(**x, training=False)
+        y = self.model(x, training=False)
 
         accuracy = tf.keras.metrics.SparseCategoricalAccuracy()
         accuracy.update_state(y_true, y)
+
+        self._step += 1
+        self._callbacks.on_predict_batch_end(self._step, {'accuracy': accuracy})
+
         return accuracy.result().numpy(), y
