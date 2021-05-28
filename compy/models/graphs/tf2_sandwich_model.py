@@ -8,6 +8,27 @@ import tensorflow.keras
 from compy.models.model import Model
 
 
+@tf.function(autograph=False)
+@tf.custom_gradient
+def gather_dense_grad(params, indices):
+    """Like tf.gather but with a dense gradient.
+
+    ``tf.gather(params, indices)`` has a sparse gradient: only the selected elements from params
+    affect the output, so the gradient of ``params`` is zero at all positions that are not selected by ``indices``.
+    This is useful of ``params`` is very large and ``indices`` only selects a small subset of it.
+
+    However, sometimes we know that ``params`` is not too large and we need an explicit gradient for each element
+    anyway. In this case, it doesn't make sense to compute a sparse gradient first and then convert it to a dense
+    representation later. Thus, this version of ``tf.gather`` directly computes a dense gradient.
+    """
+    grad_shape = tf.shape(params)
+
+    def grad(dy):
+        return tf.tensor_scatter_nd_add(tf.zeros(grad_shape), indices[:, tf.newaxis], dy), None
+
+    return tf.gather(params, indices), grad
+
+
 class GGNNLayer(tf.keras.layers.Layer):
     def __init__(self, model_config):
         super(GGNNLayer, self).__init__()
@@ -89,12 +110,11 @@ class GGNNLayer(tf.keras.layers.Layer):
             if tf.shape(type_ids)[0] == 0:
                 continue
             # Retrieve source states and compute type-transformation.
-            edge_source_states = tf.gather(in_states, message_sources[type_index])
+            edge_source_states = gather_dense_grad(in_states, message_sources[type_index])
             type_messages = tf.matmul(edge_source_states, self.type_weights[layer_no][type_index])
             if self.add_type_bias:
                 type_messages += self.type_biases[layer_no][type_index]
-            messages = tf.tensor_scatter_nd_add(messages, tf.expand_dims(message_targets[type_index], -1),
-                                                type_messages)
+            messages = tf.tensor_scatter_nd_add(messages, message_targets[type_index][..., tf.newaxis], type_messages)
 
         # Concatenate residual messages, if applicable.
         if residuals is not None:
@@ -150,13 +170,10 @@ class NodeEmbeddingLayer(tensorflow.keras.layers.Layer):
         return states
 
 
-@tf.function(input_signature=[
-    tf.TensorSpec(shape=(None,)),
-    tf.TensorSpec(shape=(None,), dtype=tf.int32),
-    tf.TensorSpec(shape=(None,), dtype=tf.int32)
-])
 def segment_softmax(values, sizes, segments):
-    values = values - tf.reduce_max(values)  # softmax(a+c) = softmax(a), improves numerical stability
+    # softmax(a+c) = softmax(a), improves numerical stability
+    # don't propagate gradient through the max, just treat it as constant
+    values = values - tf.stop_gradient(tf.reduce_max(values))
     values = tf.exp(values)
 
     # compute softmax

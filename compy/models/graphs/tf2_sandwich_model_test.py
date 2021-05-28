@@ -6,7 +6,7 @@ import networkx as nx
 from compy.representations.common import Graph
 from compy.representations.sequence_graph import SequenceGraph
 from .tf2_sandwich_model import GGNNLayer, GlobalAttentionLayer, RNNLayer, Tf2SandwichModel, \
-    ragged_graph_to_leaf_sequence, segment_softmax
+    ragged_graph_to_leaf_sequence, segment_softmax, gather_dense_grad
 
 tf.compat.v1.enable_eager_execution()
 # tf.config.experimental_run_functions_eagerly(True) # turn on for debugging
@@ -94,6 +94,21 @@ def test_segment_softmax():
         tf.nn.softmax(values[6:8]),
     ], axis=0)
     npt.assert_allclose(segment_softmax(values, sizes, segments).numpy(), expected.numpy(), rtol=1e-4)
+
+
+def test_gather_dense_grad():
+    values = tf.range(64, dtype=tf.float32)
+    indices = tf.random.uniform((60,), seed=214, dtype=tf.int32, maxval=64)
+
+    with tf.GradientTape(persistent=True) as tape:
+        tape.watch(values)
+        out_dense = gather_dense_grad(values, indices)
+        out_sparse = tf.gather(values, indices)
+        npt.assert_equal(out_dense.numpy(), out_sparse.numpy())
+
+    grad_dense = tape.gradient(out_dense, values)
+    grad_sparse = tf.convert_to_tensor(tape.gradient(out_sparse, values))
+    npt.assert_equal(grad_dense.numpy(), grad_sparse.numpy(), str(indices.numpy()))
 
 
 def test_train_model():
