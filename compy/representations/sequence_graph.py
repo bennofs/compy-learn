@@ -28,6 +28,13 @@ class Vocabulary:
     def load(file: Union[str, BinaryIO, pathlib.Path]) -> 'Vocabulary':
         return Vocabulary(**np.load(file, allow_pickle=True))
 
+    @staticmethod
+    def unnamed(num_node_kinds: int, num_edge_kinds: int) -> 'Vocabulary':
+        return Vocabulary(
+            np.array(['node' + str(i) for i in range(num_node_kinds)]),
+            np.array(['edge' + str(i) for i in range(num_edge_kinds)])
+        )
+
     def save(self, file: Union[str, BinaryIO, pathlib.Path]):
         np.savez(file, node_kinds=self.node_kinds, edge_kinds=self.edge_kinds)
 
