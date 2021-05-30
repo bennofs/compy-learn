@@ -465,9 +465,11 @@ class Tf2SandwichModel(Model):
             y_true = tf.constant([g['label'] for g in batch])
 
             data = tf.data.Dataset.from_tensors((x, y_true))
-            self.model.reset_metrics()
-            result = self.model.make_train_function()(iter(data))
+            iterator = iter(data)
+            result = self.model.make_train_function()(iterator)
             result = {k: v.numpy() for k, v in result.items()}
+
+            self.model.reset_metrics()
 
             self._callbacks.on_train_batch_end(self._step, result)
 
