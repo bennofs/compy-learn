@@ -38,8 +38,8 @@ def test_ggnn_layer():
 def test_global_attention_layer():
     layer = GlobalAttentionLayer()
     inputs = tf.random.uniform([10, 4], seed=0)
-    graph_sizes = tf.constant([2, 4, 4])
-    out = layer(inputs, graph_sizes)
+    graph_ids = tf.constant([0, 0, 1, 1, 1, 1, 2, 2, 2, 2])
+    out = layer(inputs, graph_ids)
 
     out_gate0 = tf.squeeze(layer.gate_layer(inputs[:2]), -1)
     out_gate0 = tf.nn.softmax(out_gate0)
@@ -93,7 +93,7 @@ def test_segment_softmax():
         tf.nn.softmax(values[4:6]),
         tf.nn.softmax(values[6:8]),
     ], axis=0)
-    npt.assert_allclose(segment_softmax(values, sizes, segments).numpy(), expected.numpy(), rtol=1e-4)
+    npt.assert_allclose(segment_softmax(values, segments, 3).numpy(), expected.numpy(), rtol=1e-4)
 
 
 def test_gather_dense_grad():

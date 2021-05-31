@@ -32,6 +32,7 @@ def gather_dense_grad(params, indices):
 class GGNNLayer(tf.keras.layers.Layer):
     def __init__(self, model_config):
         super(GGNNLayer, self).__init__()
+        self.supports_masking = True
         self._model_config = model_config
 
         self.num_edge_types = model_config['num_edge_types']
@@ -147,6 +148,7 @@ class NodeEmbeddingLayer(tensorflow.keras.layers.Layer):
         self.hidden_size = config["hidden_dim"]
         self.num_classes = config["hidden_size_orig"]
         self.embed = tf.keras.layers.Embedding(self.num_classes, self.hidden_size)
+        self.supports_masking = True
 
         self.pos_enc = None
         if "pos_enc_len" in config:
@@ -170,14 +172,18 @@ class NodeEmbeddingLayer(tensorflow.keras.layers.Layer):
         return states
 
 
-def segment_softmax(values, sizes, segments):
+def segment_softmax(values, segments, num_segments, mask=None):
     # softmax(a+c) = softmax(a), improves numerical stability
     # don't propagate gradient through the max, just treat it as constant
     values = values - tf.stop_gradient(tf.reduce_max(values))
     values = tf.exp(values)
 
+    if mask is not None:
+        values = values * tf.cast(mask, dtype=values.dtype)
+
     # compute softmax
-    sums = tf.repeat(tf.math.segment_sum(values, segments), sizes)
+    sums = tf.math.unsorted_segment_sum(values, segments, num_segments)
+    sums = gather_dense_grad(sums, segments)
     return values / (sums + 1e-16)
 
 
@@ -186,17 +192,18 @@ class GlobalAttentionLayer(tensorflow.keras.layers.Layer):
         super().__init__(**kwargs)
         self.gate_layer = tf.keras.layers.Dense(1, activation=None)
         self.output_layer = tf.keras.layers.Dense(2, activation=None)
+        self.supports_masking = False
 
     @tf.function(experimental_relax_shapes=True)
-    def call(self, states, graph_sizes, training=True):
-        segments = tf.repeat(tf.range(tf.shape(graph_sizes)[0]), graph_sizes)
+    def call(self, states, graph_ids, mask=None):
+        num_graphs = tf.reduce_max(graph_ids) + 1
 
         gate = tf.squeeze(self.gate_layer(states), -1)
-        gate = segment_softmax(gate, graph_sizes, segments)
+        gate = segment_softmax(gate, graph_ids, num_graphs, mask=mask)
 
         outputs = self.output_layer(states)
         outputs = tf.einsum('ij,i->ij', outputs, gate)
-        return tf.math.segment_sum(outputs, segments)
+        return tf.math.unsorted_segment_sum(outputs, graph_ids, num_graphs)
 
 
 def ragged_graph_to_leaf_sequence(nodes, node_positions):
@@ -226,10 +233,10 @@ class RNNLayer(tf.keras.layers.Layer):
         self.num_layers = model_config['num_layers']
         self.dropout_rate = model_config['dropout_rate']
 
-        self.rnns_bwd = [tf.keras.layers.GRU(self.hidden_dim // 2, return_sequences=True, go_backwards=True) for _ in
-                         range(self.num_layers)]
-        self.rnns_fwd = [tf.keras.layers.GRU(self.hidden_dim // 2, return_sequences=True) for _ in
-                         range(self.num_layers)]
+        self.rnns = [
+            tf.keras.layers.Bidirectional(tf.keras.layers.GRU(self.hidden_dim // 2, return_sequences=True))
+            for _ in range(self.num_layers)
+        ]
 
     def get_config(self):
         base_config = super(RNNLayer, self).get_config()
@@ -245,9 +252,7 @@ class RNNLayer(tf.keras.layers.Layer):
         # Run sequence through all layers.
         real_dropout_rate = self.dropout_rate * tf.cast(training, 'float32')
         for layer_no in range(self.num_layers):
-            fwd = self.rnns_fwd[layer_no](sequence)
-            bwd = self.rnns_bwd[layer_no](sequence)
-            sequence = tf.concat([fwd, bwd], axis=-1)
+            sequence = self.rnns[layer_no](sequence)
             sequence = tf.ragged.map_flat_values(tf.nn.dropout, sequence, rate=real_dropout_rate)
 
         # Scatter sequence back into graph states
@@ -259,7 +264,35 @@ class RNNLayer(tf.keras.layers.Layer):
         return tf.tensor_scatter_nd_update(states.flat_values, dest_indices, sequence.flat_values)
 
 
-def sandwich_model(config):
+class DenseRNNLayer(tf.keras.layers.Layer):
+    def __init__(self, model_config):
+        super(DenseRNNLayer, self).__init__()
+        self._model_config = model_config
+        self.hidden_dim = model_config['hidden_dim']
+        self.num_layers = model_config['num_layers']
+        self.dropout_rate = model_config['dropout_rate']
+
+        self.rnns = [
+            tf.keras.layers.Bidirectional(tf.keras.layers.GRU(self.hidden_dim // 2, return_sequences=True))
+            for _ in range(self.num_layers)
+        ]
+        self.supports_masking = True
+
+    @tf.function(experimental_relax_shapes=True)
+    def call(self, states, seq_shape, mask=None):
+        assert len(seq_shape) == 2, "seq_shape must be 2D: (num_sequences, length_per_sequence)"
+        total_len = seq_shape[0] * seq_shape[1]
+        sequence = tf.reshape(states[:total_len], tf.concat([seq_shape, (self.hidden_dim,)], axis=0))
+        mask = tf.reshape(mask[:total_len], seq_shape)
+
+        for rnn in self.rnns:
+            sequence = rnn(sequence, mask=mask)
+            sequence = tf.nn.dropout(sequence, rate=self.dropout_rate)
+
+        return tf.concat([tf.reshape(sequence, (-1, self.hidden_dim)), states[total_len:]], axis=0)
+
+
+def sandwich_model(config, rnn_dense=False):
     layer_config = {}
     for layer in ('embed', 'rnn', 'ggnn'):
         layer_config[layer] = dict(config['base'], **config.get(layer, {}))
@@ -267,6 +300,8 @@ def sandwich_model(config):
     # inputs
     nodes = tf.keras.Input(shape=(), dtype=tf.int32, name="nodes")
     node_positions = tf.keras.Input(shape=(), dtype=tf.int32, name="node_positions")
+    seq_shape = tf.keras.Input(shape=(), batch_size=2, dtype=tf.int32, name="seq_shape")
+    seq_mask = tf.keras.Input(shape=(), dtype=tf.bool, name="mask")
     edges = tf.keras.Input(shape=(3,), dtype=tf.int32, name="edges")
     graph_sizes = tf.keras.Input(shape=(), dtype=tf.int32, name="graph_sizes")
 
@@ -274,19 +309,32 @@ def sandwich_model(config):
     states = NodeEmbeddingLayer(layer_config['embed'])(nodes=nodes, node_positions=node_positions)
     for layer_kind in config['layers']:
         if layer_kind == 'rnn':
-            states = RNNLayer(layer_config['rnn'])(states=states, node_positions=node_positions,
-                                                   graph_sizes=graph_sizes)
+            if rnn_dense:
+                states = DenseRNNLayer(layer_config['rnn'])(states=states, seq_shape=seq_shape, mask=seq_mask)
+            else:
+                states = RNNLayer(layer_config['rnn'])(
+                    states=states, node_positions=node_positions, graph_sizes=graph_sizes
+                )
             continue
 
         if layer_kind == 'ggnn':
             states = GGNNLayer(layer_config['ggnn'])(states=states, edges=edges)
             continue
 
-        raise ValueError("unknown model layer type: " + layer_kind + ", expected one of [ggnn, rnn]")
+
+        raise ValueError("unknown model layer type: " + layer_kind + ", expected one of [ggnn, rnn, rnn-dense]")
 
     # outputs
-    output = GlobalAttentionLayer()(states=states, graph_sizes=graph_sizes)
-    return tf.keras.Model(inputs=(nodes, node_positions, edges, graph_sizes), outputs=output)
+    if rnn_dense:
+        graph_ids = tf.keras.Input(shape=(), dtype=tf.int32, name="graph_ids")
+    else:
+        num_graphs = tf.shape(graph_sizes)[0]
+        graph_ids = tf.repeat(tf.range(num_graphs, dtype=tf.int32), graph_sizes)
+    output = GlobalAttentionLayer()(states=states, graph_ids=graph_ids)
+
+    inputs = (nodes, node_positions, seq_shape, seq_mask, edges, graph_ids) if rnn_dense else (
+        nodes, node_positions, edges, graph_sizes)
+    return tf.keras.Model(inputs=inputs, outputs=output)
 
 
 class Tf2SandwichModel(Model):

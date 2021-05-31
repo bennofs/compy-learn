@@ -65,6 +65,12 @@ class SequenceGraph:
         self.edges = edges
         self.seq_len = seq_len
 
+    def get_sequence_nodes(self):
+        return self.nodes[:self.seq_len]
+
+    def get_non_sequence_nodes(self):
+        return self.nodes[self.seq_len:]
+
     def get_sequence_tokens(self, vocab: Vocabulary):
         return [vocab.node_kinds[i] for i in self.nodes[:self.seq_len]]
 
