@@ -284,6 +284,9 @@ class DenseRNNLayer(tf.keras.layers.Layer):
         for rnn in self.rnns:
             rnn.build((None, None, self.hidden_dim))
 
+    def get_config(self):
+        return self._model_config
+
     @tf.function(experimental_relax_shapes=True)
     def call(self, states, seq_shape, mask=None):
         assert len(seq_shape) == 2, "seq_shape must be 2D: (num_sequences, length_per_sequence)"
