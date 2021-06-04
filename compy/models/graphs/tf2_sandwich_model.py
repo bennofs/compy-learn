@@ -340,6 +340,7 @@ def sandwich_model(config, rnn_dense=False):
         num_graphs = tf.shape(graph_sizes)[0]
         graph_ids = tf.repeat(tf.range(num_graphs, dtype=tf.int32), graph_sizes)
     output = GlobalAttentionLayer()(states=states, graph_ids=graph_ids)
+    output = tf.nn.softmax(output)
 
     inputs = (nodes, node_positions, seq_shape, seq_mask, edges, graph_ids) if rnn_dense else (
         nodes, node_positions, edges, graph_sizes)
