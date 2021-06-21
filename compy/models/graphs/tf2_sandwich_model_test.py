@@ -129,5 +129,20 @@ def test_train_model():
 
     model = Tf2SandwichModel({
         'num_epochs': 4,
+        'layers': ['rnn', 'ggnn', 'rnn'],
+        'base': {
+            'hidden_dim': 4,
+        }
     }, num_types=3)
     model.train(data, data)
+
+
+def test_save_model():
+    model = Tf2SandwichModel({
+        'num_epochs': 4,
+        'layers': ['rnn', 'ggnn', 'rnn'],
+        'base': {
+            'hidden_dim': 4,
+        }
+    }, num_types=3).model
+    model.save("/tmp/testmodel")

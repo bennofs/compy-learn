@@ -285,7 +285,8 @@ class DenseRNNLayer(tf.keras.layers.Layer):
             rnn.build((None, None, self.hidden_dim))
 
     def get_config(self):
-        return self._model_config
+        base_config = super(DenseRNNLayer, self).get_config()
+        return dict(base_config, model_config=self._model_config)
 
     @tf.function(experimental_relax_shapes=True)
     def call(self, states, seq_shape, mask=None):
