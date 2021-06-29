@@ -67,13 +67,7 @@ class GGNNLayer(tf.keras.layers.Layer):
                              range(self.num_layers)]
         self.type_biases = [[make_bias('bias-' + str(j) + '-' + str(i)) for i in range(self.num_edge_types)] for j in
                             range(self.num_layers)]
-        self.rnns = [tf.keras.layers.GRUCell(self.hidden_dim) for _ in range(self.num_layers)]
-        for ix, rnn in enumerate(self.rnns):
-            # Initialize the GRUs input dimension based on whether any residuals will be passed in.
-            if str(ix) in self.residuals:
-                rnn.build(self.hidden_dim * (1 + len(self.residuals[str(ix)])))
-            else:
-                rnn.build(self.hidden_dim)
+        self.rnns = [tf.keras.layers.GRUCell(self.hidden_dim) for i in range(self.num_layers)]
 
     @tf.function(experimental_relax_shapes=True)
     def call(self, states, edges, training=True, **kwargs):

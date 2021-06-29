@@ -2,6 +2,7 @@ import numpy as np
 import tensorflow as tf
 import numpy.testing as npt
 import networkx as nx
+import tempfile
 
 from compy.representations.common import Graph
 from compy.representations.sequence_graph import SequenceGraph
@@ -9,7 +10,7 @@ from .tf2_sandwich_model import GGNNLayer, GlobalAttentionLayer, RNNLayer, Tf2Sa
     ragged_graph_to_leaf_sequence, segment_softmax, gather_dense_grad
 
 tf.compat.v1.enable_eager_execution()
-# tf.config.experimental_run_functions_eagerly(True) # turn on for debugging
+#tf.config.experimental_run_functions_eagerly(True) # turn on for debugging
 
 
 def test_ggnn_layer():
@@ -144,5 +145,17 @@ def test_save_model():
         'base': {
             'hidden_dim': 4,
         }
-    }, num_types=3).model
-    model.save("/tmp/testmodel")
+    }, num_types=4).model
+
+    model({
+        'nodes': tf.range(4, dtype=tf.int32),
+        'node_positions': tf.range(4, dtype=tf.int32),
+        'edges': tf.constant([
+            (0, 1, 1),
+            (2, 1, 0),
+        ], dtype=tf.int32),
+        'graph_sizes': tf.constant([4], dtype=tf.int32),
+    })
+
+    with tempfile.TemporaryDirectory() as dir:
+        model.save(f"{dir}/model.h5")
