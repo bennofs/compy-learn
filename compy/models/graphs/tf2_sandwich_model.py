@@ -30,8 +30,8 @@ def gather_dense_grad(params, indices):
 
 
 class GGNNLayer(tf.keras.layers.Layer):
-    def __init__(self, model_config):
-        super(GGNNLayer, self).__init__()
+    def __init__(self, model_config, **kwargs):
+        super(GGNNLayer, self).__init__(**kwargs)
         self.supports_masking = True
         self._model_config = model_config
 
@@ -259,8 +259,8 @@ class RNNLayer(tf.keras.layers.Layer):
 
 
 class DenseRNNLayer(tf.keras.layers.Layer):
-    def __init__(self, model_config):
-        super(DenseRNNLayer, self).__init__()
+    def __init__(self, model_config, **kwargs):
+        super(DenseRNNLayer, self).__init__(**kwargs)
         self._model_config = model_config
         self.hidden_dim = model_config['hidden_dim']
         self.num_layers = model_config['num_layers']
