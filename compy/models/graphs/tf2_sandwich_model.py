@@ -283,15 +283,16 @@ class DenseRNNLayer(tf.keras.layers.Layer):
         return dict(base_config, model_config=self._model_config)
 
     @tf.function(experimental_relax_shapes=True)
-    def call(self, states, seq_shape, mask=None):
+    def call(self, states, seq_shape, training=True, mask=None):
         assert len(seq_shape) == 2, "seq_shape must be 2D: (num_sequences, length_per_sequence)"
         total_len = seq_shape[0] * seq_shape[1]
         sequence = tf.reshape(states[:total_len], tf.concat([seq_shape, (self.hidden_dim,)], axis=0))
         mask = tf.reshape(mask[:total_len], seq_shape)
 
+        real_dropout_rate = self.dropout_rate * tf.cast(training, 'float32')
         for rnn in self.rnns:
             sequence = rnn(sequence, mask=mask)
-            sequence = tf.nn.dropout(sequence, rate=self.dropout_rate)
+            sequence = tf.nn.dropout(sequence, rate=real_dropout_rate)
 
         return tf.concat([tf.reshape(sequence, (-1, self.hidden_dim)), states[total_len:]], axis=0)
 
