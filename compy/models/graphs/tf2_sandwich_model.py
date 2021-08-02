@@ -87,7 +87,7 @@ class GGNNLayer(tf.keras.layers.Layer):
                 else:
                     residuals = None
                 new_states = self.propagate(layer_states[-1], layer_no, edge_type_ids, message_sources, message_targets,
-                                            residuals=residuals)
+                                            training, residuals=residuals)
                 if training: new_states = tf.nn.dropout(new_states, rate=self.dropout_rate)
                 # Add or overwrite states for this layer number, depending on the step.
                 if step == 0:
@@ -97,7 +97,7 @@ class GGNNLayer(tf.keras.layers.Layer):
         # Return the final layer state.
         return layer_states[-1]
 
-    def propagate(self, in_states, layer_no, edge_type_ids, message_sources, message_targets, residuals=None):
+    def propagate(self, in_states, layer_no, edge_type_ids, message_sources, message_targets, training, residuals=None):
         # Collect messages across all edge types.
         messages = tf.zeros_like(in_states)
         for type_index in range(self.num_edge_types):
@@ -116,7 +116,7 @@ class GGNNLayer(tf.keras.layers.Layer):
             messages = tf.concat(residuals + [messages], axis=-1)
 
         # Run GRU for each node.
-        new_states, _ = self.rnns[layer_no](messages, in_states)
+        new_states, _ = self.rnns[layer_no](messages, in_states, training=training)
         return new_states
 
 
