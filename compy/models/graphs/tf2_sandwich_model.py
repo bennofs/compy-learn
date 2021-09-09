@@ -296,6 +296,103 @@ class DenseRNNLayer(tf.keras.layers.Layer):
 
         return tf.concat([tf.reshape(sequence, (-1, self.hidden_dim)), states[total_len:]], axis=0)
 
+def pack_ragged_batch_to_dense_input(*, seq_nodes: tf.RaggedTensor, non_seq_nodes: tf.RaggedTensor, edges: tf.RaggedTensor):
+    """
+    Rake a batch of train inputs as ragged tensors (sequence lengths and number of nodes can differ for each sample)
+    and pack it into a dense representation to be used as input for a sandwich model with rnn_dense=True.
+
+    :param seq_nodes: The sequence nodes for each sample
+    :param non_seq_nodes: The internal (non-sequence) nodes for each sample
+    :param edges: Edges for each sample, as (type, src, dest), where src and dest are indicies into the
+                  concatenation of seq_nodes and non_seq_nodes for the sample.
+    :return: A dict that can be passed as input to a sandwich model with rnn_dense=True
+    """
+    # we want to pack the node tensor as follows:
+    # [s1 s1 s1 0 0 s2 s2 s2 s2 s2 s3 s3 0 0 0 n1 n1 n1 n2 n2 n3]
+    # where s1, s2 and s3 are sequence nodes of the first, second and third sample
+    # and n1, n2 and n3 are non-sequence nodes of the first, second and third sample
+
+    # we first pad the ragged sequence nodes, to get a rectangular shape:
+    # [s1 s1 s1  0  0]
+    # [s2 s2 s2 s2 s2]
+    # [s3 s3 0   0  0]
+    seq_nodes_padded = seq_nodes.to_tensor()
+    seq_shape = tf.shape(seq_nodes_padded)
+
+    # compute the mask that is 0 for the added padding, and 1 otherwise:
+    # [ 1  1  1  0  0]
+    # [ 1  1  1  1  1]
+    # [ 1  1  0  0  0]
+    # and reshape it to be flat 1d:
+    # [ 1 1 1 0 0  1 1 1 1 1  1 1 0 0 0]
+    seq_mask = tf.reshape(tf.ones_like(seq_nodes, dtype=tf.bool).to_tensor(), (-1,))
+
+    # now pack the nodes by concatenating the flat 1d padded sequence nodes and the unpadded non-sequence nodes
+    num_seq_nodes = seq_shape[0] * seq_shape[1]
+    num_non_seq_nodes = tf.shape(non_seq_nodes.flat_values)[0]
+    nodes = tf.concat([tf.reshape(seq_nodes_padded, (-1, )), non_seq_nodes.flat_values], axis=0)
+
+    # seq_positions is a flat tensor of indicies for each element in the sequence (1-based):
+    # [1 2 3 4 5}
+    # [1 2 3 4 5]
+    # [1 2 3 4 5]
+    # we then mask this tensor to zero the indices for padded sequence locations and pad it with zeros for the
+    # non-sequence nodes, so we get the node_positions:
+    # [1 2 3 0 0 1 2 3 4 5 1 2 0 0 0 0 0 0 0 0 0]
+    seq_len = tf.cast(seq_nodes.row_lengths(), edges.dtype),
+    seq_positions = tf.reshape(
+        tf.repeat(tf.range(seq_shape[1], dtype=tf.int32)[tf.newaxis, :], seq_shape[0], axis=0),
+        (-1,)
+    ) + 1
+    node_positions = tf.pad(seq_positions * tf.cast(seq_mask, seq_positions.dtype), [[0, num_non_seq_nodes]])
+
+    # seq_offset is the index of the first sequence node of the graph associated with each edge
+    # if we have 2 edges in the first sample, 1 in the second and 3 in the third, then seq_offsets is (for the nodes
+    # given in the examples before):
+    # [0 0 5 10 10 10]
+    # because the sequence nodes start at index 0 for the first sample, 5 for the second and 10 for the third
+    seq_offset = tf.range(seq_shape[0]) * seq_shape[1]
+    seq_offset = tf.repeat(seq_offset, edges.row_lengths())
+
+    # non_seq_offset is the index of the first non-sequence node of the graph associated with each edge
+    # for our example, the row starts of non-sequential nodes are [0, 3, 5]
+    # we need to offset those by the number of padded sequence nodes to get the starts in the packed nodes tensor:
+    # (since all the sequence nodes are before the first non-seq node in the packed node tensor): [15, 18, 20]
+    # and then we repeat them for each edge: [15 15 18 20 20 20]
+    non_seq_starts = tf.cast(non_seq_nodes.row_starts(), edges.dtype)
+    non_seq_offset = non_seq_starts + num_seq_nodes - seq_len
+    non_seq_offset = tf.repeat(non_seq_offset, edges.row_lengths())
+
+    # for each edge, the number of sequence nodes in the associated graph
+    seq_len_edges = tf.repeat(seq_len, edges.row_lengths())
+
+    # transform edge indices to indices into the packed node tensor
+    def offset_edges(x):
+        is_seq = tf.cast(tf.less(x, seq_len_edges), x.dtype)
+        return x + seq_offset * is_seq + non_seq_offset * (1 - is_seq)
+
+    edge_type, edge_src, edge_dst = tf.unstack(edges.flat_values, axis=-1)
+    edges = tf.stack([edge_type, offset_edges(edge_src), offset_edges(edge_dst)], axis=-1)
+
+    num_nodes = tf.shape(nodes)[0]
+    tf.assert_less(edges[:, 1], num_nodes)
+    tf.assert_less(edges[:, 2], num_nodes)
+
+    # graph_ids contains the sample id for each node in the flat node tensor
+    num_graphs = seq_shape[0]
+    seq_graph_ids = tf.reshape(tf.broadcast_to(tf.range(num_graphs)[:, tf.newaxis], seq_shape), (-1, ))
+    non_seq_graph_ids = tf.repeat(tf.range(num_graphs), non_seq_nodes.row_lengths())
+    graph_ids = tf.concat([seq_graph_ids, non_seq_graph_ids], axis=0)
+
+    return {
+        'edges': edges,
+        'nodes': nodes,
+        'graph_ids': graph_ids,
+        'mask': tf.concat([tf.reshape(seq_mask, (num_seq_nodes, )), tf.ones(num_non_seq_nodes, dtype=tf.bool)], axis=0),
+        'seq_shape': seq_shape,
+        'node_positions': node_positions,
+    }
+
 
 def sandwich_model(config, rnn_dense=False):
     layer_config = {}

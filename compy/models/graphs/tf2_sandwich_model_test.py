@@ -7,7 +7,7 @@ import tempfile
 from compy.representations.common import Graph
 from compy.representations.sequence_graph import SequenceGraph
 from .tf2_sandwich_model import GGNNLayer, GlobalAttentionLayer, RNNLayer, Tf2SandwichModel, \
-    ragged_graph_to_leaf_sequence, segment_softmax, gather_dense_grad
+    ragged_graph_to_leaf_sequence, segment_softmax, gather_dense_grad, pack_ragged_batch_to_dense_input
 
 tf.compat.v1.enable_eager_execution()
 #tf.config.experimental_run_functions_eagerly(True) # turn on for debugging
@@ -136,6 +136,41 @@ def test_train_model():
         }
     }, num_types=3)
     model.train(data, data)
+
+
+def test_pack_ragged_batch_to_dense_input():
+    seq_nodes = tf.ragged.constant([
+        [10,20,30],
+        [1,2,3,4,5],
+        [-1,3]
+    ], dtype=tf.int32)
+    non_seq_nodes = tf.ragged.constant([
+        [11, 22, 33],
+        [-3, -4],
+        [100],
+    ], dtype=tf.int32)
+    edges = tf.ragged.constant([
+        [[0, 0, 3], [-1, 1, 2]],
+        [[0, 6, 5]],
+        [[1, 2, 2], [0, 0, 0], [0, 2, 0]]
+    ], dtype=tf.int32, inner_shape=(3,))
+
+    inp = pack_ragged_batch_to_dense_input(seq_nodes=seq_nodes, non_seq_nodes=non_seq_nodes, edges=edges)
+
+    flat_nodes = [10, 20, 30, 0, 0, 1, 2, 3, 4, 5, -1, 3, 0, 0, 0, 11, 22, 33, -3, -4, 100]
+    npt.assert_equal(inp['nodes'].numpy(), flat_nodes)
+    npt.assert_equal(inp['mask'].numpy(), [True,True,True,False,False,True,True,True,True,True,True,True,False,False,False,True,True,True,True,True,True])
+    npt.assert_equal(inp['graph_ids'].numpy(), [0,0,0,0,0,1,1,1,1,1,2,2,2,2,2,0,0,0,1,1,2])
+    npt.assert_equal(inp['node_positions'].numpy(), [1,2,3,0,0,1,2,3,4,5,1,2,0,0,0,0,0,0,0,0,0])
+    npt.assert_equal(inp['seq_shape'].numpy(), [3,5])
+    npt.assert_equal(inp['edges'].numpy(), [
+        [0, flat_nodes.index(10), flat_nodes.index(11)],
+        [-1, flat_nodes.index(20), flat_nodes.index(30)],
+        [0, flat_nodes.index(-4), flat_nodes.index(-3)],
+        [1, flat_nodes.index(100), flat_nodes.index(100)],
+        [0, flat_nodes.index(-1), flat_nodes.index(-1)],
+        [0, flat_nodes.index(100), flat_nodes.index(-1)],
+    ])
 
 
 def test_save_model():
