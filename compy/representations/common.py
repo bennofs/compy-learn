@@ -217,12 +217,17 @@ class Graph(object):
 
         return Graph(result, list(self.__node_types), list(self.__edge_types))
 
+    def without_self_edges(self):
+        G = self.G.copy()
+        G.remove_edges_from(nx.selfloop_edges(G))
+        return Graph(G, list(self.__node_types), list(self.__edge_types))
+
     def size(self):
         return len(self.G)
 
     def draw(self, path=None, with_legend=False, align_tokens=True):
         # Copy graph object because attr modifications for a cleaner view are needed.
-        G = self.G
+        G = self.G.copy()
 
         # Add node labels.
         for (n, data) in G.nodes(data=True):
@@ -230,7 +235,7 @@ class Graph(object):
                 if type(data["attr"]) is tuple:
                     label = "\n".join(data["attr"])
                 else:
-                    label = data["attr"]
+                    label = data['label'] if 'label' in data else data["attr"]
 
                 G.nodes[n]["label"] = label
 

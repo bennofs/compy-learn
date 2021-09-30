@@ -122,6 +122,19 @@ class SequenceGraph:
 
         return SequenceGraph(np.array(nodes, dtype=np.int32), np.array(list(zip(*edges)), dtype=np.int32), seq_len)
 
+    def to_undirected(self) -> 'SequenceGraph':
+        new_nodes = self.nodes.copy()
+        num_edges = max(self.edges[0])  + 1
+
+        kind, src, dst = self.edges
+        kind_rev = num_edges + kind
+
+        new_edges = np.concatenate([
+            self.edges,
+            np.array([kind_rev, dst, src])
+        ], axis=-1)
+        return SequenceGraph(new_nodes, new_edges, self.seq_len)
+
 
 class SequenceGraphBuilder(RepresentationBuilder):
     __graph_builder: RepresentationBuilder
