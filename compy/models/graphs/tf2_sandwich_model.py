@@ -296,6 +296,7 @@ class DenseRNNLayer(tf.keras.layers.Layer):
 
         return tf.concat([tf.reshape(sequence, (-1, self.hidden_dim)), states[total_len:]], axis=0)
 
+
 def pack_ragged_batch_to_dense_input(*, seq_nodes: tf.RaggedTensor, non_seq_nodes: tf.RaggedTensor, edges: tf.RaggedTensor):
     """
     Rake a batch of train inputs as ragged tensors (sequence lengths and number of nodes can differ for each sample)

@@ -66,7 +66,7 @@ def add_token_ast_edges(g: nx.MultiDiGraph, node):
     """Add edges with attr `token` connecting tokens to the closest AST node covering them"""
     if hasattr(node, 'tokens'):
         for token in node.tokens:
-            g.add_node(token, attr=token.kind, seq_order=token.index)
+            g.add_node(token, attr=token.kind, seq_order=token.index, label=token.name + "\n" + token.kind)
             g.add_edge(node, token, attr="token")
 
 
